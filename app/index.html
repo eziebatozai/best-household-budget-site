@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dompet Keluarga — Anggaran Rumah Tangga</title>
+  <meta name="description" content="Alat pengelola anggaran, pengeluaran, target tabungan, dan pengingat tagihan rumah tangga Indonesia.">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzNiAzNiI+PHJlY3Qgd2lkdGg9IjM2IiBoZWlnaHQ9IjM2IiByeD0iMTAiIGZpbGw9IiMwRjVDNEQiLz48cmVjdCB4PSIxMCIgeT0iMTUiIHdpZHRoPSIxNiIgaGVpZ2h0PSIxMSIgcng9IjMiIGZpbGw9IiNGNkY0RUYiLz48cmVjdCB4PSIxOSIgeT0iMTkiIHdpZHRoPSI3IiBoZWlnaHQ9IjQiIHJ4PSIxIiBmaWxsPSIjQzk2QTJCIi8+PC9zdmc+">
+  <link rel="stylesheet" href="css/main.css">
+  <script type="module" src="js/main.js"></script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="container header-inner">
+      <a class="brand" href="#/">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 36 36" width="34" height="34" fill="none">
+            <rect width="36" height="36" rx="10" fill="#0F5C4D"/>
+            <path d="M8 16.5L18 9l10 7.5" stroke="#F6E6C8" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+            <rect x="10.5" y="16.5" width="15" height="10.5" rx="2.5" fill="#F6F4EF"/>
+            <rect x="19.5" y="20" width="6.5" height="3.8" rx="1.2" fill="#C96A2B"/>
+          </svg>
+        </span>
+        <span class="brand-text">
+          <strong>Dompet Keluarga</strong>
+          <small>Keluarga Pratama &middot; Nov 2026</small>
+        </span>
+      </a>
+
+      <nav class="main-nav" aria-label="Navigasi utama">
+        <a href="#/" data-route="dashboard">Ringkasan</a>
+        <a href="#/anggaran" data-route="anggaran">Anggaran</a>
+        <a href="#/pengeluaran" data-route="pengeluaran">Pengeluaran</a>
+        <a href="#/tabungan" data-route="tabungan">Tabungan</a>
+        <a href="#/panduan" data-route="panduan">Panduan 50/30/20</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="app" class="container main-content" aria-live="polite"></main>
+
+  <footer class="site-footer">
+    <div class="container footer-inner">
+      <span><strong>Dompet Keluarga</strong> &mdash; Catatan anggaran bulanan rumah tangga tanpa koneksi luar.</span>
+      <span class="footer-links">
+        <a href="#/anggaran">Atur Anggaran</a>
+        <a href="#/pengeluaran">Catat Pengeluaran</a>
+        <a href="#/tabungan">Target Tabungan</a>
+        <a href="#/panduan">Tagihan &amp; 50/30/20</a>
+      </span>
+    </div>
+  </footer>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>
