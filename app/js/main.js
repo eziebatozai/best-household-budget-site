@@ -1,36 +1,36 @@
-// Main application router and shell controller for Dompet Keluarga.
-// Dashboard loads on first paint; secondary views load lazily via static-specifier import().
+// Pengontrol rute utama Dompet Keluarga.
+// Halaman Ringkasan dimuat langsung pada muatan awal; halaman lain dimuat dinamis lewat import().
 
-import { renderDashboard } from './dashboard.js';
-import { subscribe } from './state.js';
+import { mountDashboard } from './dashboard.js';
+import { onStoreChange } from './state.js';
 
-const appEl = document.getElementById('app');
-const toastEl = document.getElementById('toast');
-const navLinks = Array.from(document.querySelectorAll('.main-nav a[data-route]'));
+const stageEl = document.getElementById('app-root');
+const toastEl = document.getElementById('status-toast');
+const navItems = Array.from(document.querySelectorAll('.primary-nav a[data-nav]'));
 
-let toastTimer = null;
-let renderSeq = 0;
+let toastHandle = null;
+let drawGeneration = 0;
 
-function showToast(message) {
+function notifyUser(message) {
   if (!toastEl) return;
   toastEl.textContent = message;
   toastEl.hidden = false;
-  if (toastTimer) clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => {
+  if (toastHandle) clearTimeout(toastHandle);
+  toastHandle = setTimeout(() => {
     toastEl.hidden = true;
   }, 2600);
 }
 
-function resolveRoute(hash) {
-  const clean = (hash || '#/').replace(/^#\/?/, '').split('?')[0].toLowerCase();
-  if (clean === 'anggaran') return 'anggaran';
-  if (clean === 'pengeluaran') return 'pengeluaran';
-  if (clean === 'tabungan') return 'tabungan';
-  if (clean === 'panduan' || clean === 'tagihan') return 'panduan';
+function parseRoute(rawHash) {
+  const segment = (rawHash || '#/').replace(/^#\/?/, '').split('?')[0].toLowerCase();
+  if (segment === 'anggaran') return 'anggaran';
+  if (segment === 'pengeluaran') return 'pengeluaran';
+  if (segment === 'tabungan') return 'tabungan';
+  if (segment === 'panduan' || segment === 'tagihan') return 'panduan';
   return 'dashboard';
 }
 
-const TITLES = {
+const ROUTE_TITLES = {
   dashboard: 'Dompet Keluarga — Ringkasan Anggaran Rumah Tangga',
   anggaran: 'Perencana Anggaran | Dompet Keluarga',
   pengeluaran: 'Pencatat Pengeluaran | Dompet Keluarga',
@@ -38,59 +38,59 @@ const TITLES = {
   panduan: 'Panduan 50/30/20 & Tagihan | Dompet Keluarga',
 };
 
-async function renderCurrentRoute(resetScroll = false) {
-  const seq = ++renderSeq;
-  window.__shotReady = false;
+async function renderView(scrollTop = false) {
+  const gen = ++drawGeneration;
+  window.__viewReady = false;
 
-  const route = resolveRoute(location.hash);
-  document.title = TITLES[route] ?? TITLES.dashboard;
+  const current = parseRoute(location.hash);
+  document.title = ROUTE_TITLES[current] ?? ROUTE_TITLES.dashboard;
 
-  for (const link of navLinks) {
-    const isActive = link.dataset.route === route;
-    link.classList.toggle('active', isActive);
-    if (isActive) {
-      link.setAttribute('aria-current', 'page');
+  for (const anchor of navItems) {
+    const active = anchor.dataset.nav === current;
+    anchor.classList.toggle('is-current', active);
+    if (active) {
+      anchor.setAttribute('aria-current', 'page');
     } else {
-      link.removeAttribute('aria-current');
+      anchor.removeAttribute('aria-current');
     }
   }
 
-  if (route === 'anggaran') {
+  if (current === 'anggaran') {
     const mod = await import('./budget.js');
-    if (seq !== renderSeq) return;
-    mod.renderBudgetPlanner(appEl, showToast);
-  } else if (route === 'pengeluaran') {
+    if (gen !== drawGeneration) return;
+    mod.mountBudgetPlanner(stageEl, notifyUser);
+  } else if (current === 'pengeluaran') {
     const mod = await import('./expenses.js');
-    if (seq !== renderSeq) return;
-    mod.renderExpenses(appEl, showToast);
-  } else if (route === 'tabungan') {
+    if (gen !== drawGeneration) return;
+    mod.mountExpenses(stageEl, notifyUser);
+  } else if (current === 'tabungan') {
     const mod = await import('./goals.js');
-    if (seq !== renderSeq) return;
-    mod.renderGoals(appEl, showToast);
-  } else if (route === 'panduan') {
+    if (gen !== drawGeneration) return;
+    mod.mountGoals(stageEl, notifyUser);
+  } else if (current === 'panduan') {
     const mod = await import('./guide.js');
-    if (seq !== renderSeq) return;
-    mod.renderGuideAndBills(appEl, showToast);
+    if (gen !== drawGeneration) return;
+    mod.mountGuideAndBills(stageEl, notifyUser);
   } else {
-    renderDashboard(appEl, showToast);
+    mountDashboard(stageEl, notifyUser);
   }
 
-  if (resetScroll) window.scrollTo(0, 0);
-  window.__shotReady = true;
+  if (scrollTop) window.scrollTo(0, 0);
+  window.__viewReady = true;
 }
 
-subscribe(() => {
-  renderCurrentRoute(false);
+onStoreChange(() => {
+  renderView(false);
 });
 
 window.addEventListener('hashchange', () => {
-  renderCurrentRoute(true);
+  renderView(true);
 });
 
-let resizeTimer = null;
+let resizeHandle = null;
 window.addEventListener('resize', () => {
-  if (resizeTimer) clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(() => renderCurrentRoute(false), 120);
+  if (resizeHandle) clearTimeout(resizeHandle);
+  resizeHandle = setTimeout(() => renderView(false), 120);
 });
 
-renderCurrentRoute(true);
+renderView(true);

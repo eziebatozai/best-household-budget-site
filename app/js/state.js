@@ -1,346 +1,402 @@
-// Pure in-memory state store and financial calculations for Dompet Keluarga.
-// Does not rely on cookies, localStorage, or service workers so it works identically everywhere.
+// Pengelola state terpusat di memori dan kalkulasi keuangan Dompet Keluarga.
+// Tanpa cookie, localStorage, atau permintaan jaringan eksternal agar deterministik di semua peramban.
 
 import {
-  CATEGORIES,
-  HOUSEHOLD_INFO,
-  INITIAL_BILLS,
-  INITIAL_EXPENSES,
-  INITIAL_GOALS,
+  BUDGET_CATEGORIES,
+  FAMILY_PROFILE,
+  SEED_RECURRING_BILLS,
+  SEED_SAVINGS_GOALS,
+  SEED_TRANSACTIONS,
 } from './data.js';
 
-const listeners = new Set();
-let nextId = 100;
+const subscribers = new Set();
+let seqCounter = 200;
 
-function cloneInitialState() {
-  const budgets = {};
-  for (const cat of CATEGORIES) {
-    budgets[cat.id] = cat.budget;
+function createFreshStore() {
+  const limits = {};
+  for (const cat of BUDGET_CATEGORIES) {
+    limits[cat.id] = cat.limit;
   }
   return {
-    income: HOUSEHOLD_INFO.monthlyIncome,
-    budgets,
-    expenses: INITIAL_EXPENSES.map((item) => ({ ...item })),
-    goals: INITIAL_GOALS.map((item) => ({ ...item })),
-    bills: INITIAL_BILLS.map((item) => ({ ...item })),
-    expenseFilter: { category: 'ALL', query: '', sort: 'date-desc' },
-    editingExpenseId: null,
+    income: FAMILY_PROFILE.incomeMonthly,
+    limits,
+    transactions: SEED_TRANSACTIONS.map((tx) => ({ ...tx })),
+    goals: SEED_SAVINGS_GOALS.map((g) => ({ ...g })),
+    bills: SEED_RECURRING_BILLS.map((b) => ({ ...b })),
+    filters: {
+      category: 'ALL',
+      method: 'ALL',
+      search: '',
+      order: 'newest',
+    },
+    editingTxId: null,
+    simIncome: FAMILY_PROFILE.incomeMonthly,
   };
 }
 
-const state = cloneInitialState();
+const store = createFreshStore();
 
-export function getState() {
-  return state;
+export function readStore() {
+  return store;
 }
 
-export function subscribe(fn) {
-  listeners.add(fn);
-  return () => listeners.delete(fn);
+export function onStoreChange(handler) {
+  subscribers.add(handler);
+  return () => subscribers.delete(handler);
 }
 
-function notify() {
-  for (const fn of listeners) fn(state);
+function emitChange() {
+  for (const fn of subscribers) fn(store);
 }
 
-export function getCategoryMeta(id) {
-  return CATEGORIES.find((c) => c.id === id) ?? CATEGORIES[0];
+export function findCategory(id) {
+  return BUDGET_CATEGORIES.find((c) => c.id === id) ?? BUDGET_CATEGORIES[0];
 }
 
-export function getCategorySummary() {
-  const spentMap = {};
-  for (const cat of CATEGORIES) spentMap[cat.id] = 0;
-  for (const exp of state.expenses) {
-    if (spentMap[exp.category] !== undefined) {
-      spentMap[exp.category] += exp.amount;
+export function computeCategoryBreakdown() {
+  const totalsByCat = Object.create(null);
+  for (const cat of BUDGET_CATEGORIES) totalsByCat[cat.id] = 0;
+
+  for (const tx of store.transactions) {
+    if (Object.hasOwn(totalsByCat, tx.category)) {
+      totalsByCat[tx.category] += tx.amount;
     }
   }
-  return CATEGORIES.map((cat) => {
-    const budget = state.budgets[cat.id] ?? 0;
-    const spent = spentMap[cat.id] ?? 0;
-    const remaining = budget - spent;
-    const pct = budget > 0 ? (spent / budget) * 100 : 0;
-    let status = 'ok';
-    let statusLabel = 'Aman';
+
+  return BUDGET_CATEGORIES.map((cat) => {
+    const limit = store.limits[cat.id] ?? 0;
+    const used = totalsByCat[cat.id] ?? 0;
+    const balance = limit - used;
+    const ratio = limit > 0 ? (used / limit) * 100 : 0;
+
+    let tone = 'good';
+    let badgeText = 'Aman';
+
     if (cat.id === 'Tabungan') {
-      status = spent >= budget ? 'ok' : 'warn';
-      statusLabel = spent >= budget ? 'Target Tercapai' : 'Belum Penuh';
-    } else if (spent > budget) {
-      status = 'danger';
-      statusLabel = 'Melebihi';
-    } else if (pct >= 85) {
-      status = 'warn';
-      statusLabel = pct >= 100 ? 'Pas Anggaran' : 'Hampir Penuh';
+      if (used >= limit && limit > 0) {
+        tone = 'good';
+        badgeText = 'Tercapai';
+      } else {
+        tone = 'caution';
+        badgeText = 'Dalam Progres';
+      }
+    } else if (used > limit) {
+      tone = 'alert';
+      badgeText = 'Melebihi';
+    } else if (ratio >= 85) {
+      tone = 'caution';
+      badgeText = ratio >= 100 ? 'Tepat Batas' : 'Hampir Penuh';
     }
+
     return {
       ...cat,
-      budget,
-      spent,
-      remaining,
-      pct,
-      status,
-      statusLabel,
+      limit,
+      used,
+      balance,
+      ratio,
+      tone,
+      badgeText,
     };
   });
 }
 
-export function getTotals() {
-  const summary = getCategorySummary();
-  let totalSpending = 0;
-  let totalSavingsTransfer = 0;
-  let totalBudgeted = 0;
+export function computeOverviewMetrics() {
+  const rows = computeCategoryBreakdown();
+  let spending = 0;
+  let savings = 0;
+  let plannedTotal = 0;
 
-  for (const row of summary) {
-    totalBudgeted += row.budget;
+  for (const row of rows) {
+    plannedTotal += row.limit;
     if (row.id === 'Tabungan') {
-      totalSavingsTransfer += row.spent;
+      savings += row.used;
     } else {
-      totalSpending += row.spent;
+      spending += row.used;
     }
   }
 
-  const totalOutflow = totalSpending + totalSavingsTransfer;
-  const remainingCash = state.income - totalOutflow;
-  const unallocatedBudget = state.income - totalBudgeted;
-  const spendingPct = state.income > 0 ? (totalSpending / state.income) * 100 : 0;
-  const savingsPct = state.income > 0 ? (totalSavingsTransfer / state.income) * 100 : 0;
+  const outflow = spending + savings;
+  const freeCash = store.income - outflow;
+  const unallocated = store.income - plannedTotal;
+  const spendRate = store.income > 0 ? (spending / store.income) * 100 : 0;
+  const saveRate = store.income > 0 ? (savings / store.income) * 100 : 0;
 
-  const totalGoalSaved = state.goals.reduce((acc, g) => acc + g.saved, 0);
-  const totalGoalTarget = state.goals.reduce((acc, g) => acc + g.target, 0);
-  const unpaidBills = state.bills.filter((b) => !b.paid);
-  const unpaidBillsTotal = unpaidBills.reduce((acc, b) => acc + b.amount, 0);
+  const goalsSaved = store.goals.reduce((sum, g) => sum + g.current, 0);
+  const goalsTarget = store.goals.reduce((sum, g) => sum + g.target, 0);
+  const pendingBills = store.bills.filter((b) => !b.settled);
+  const pendingBillsAmount = pendingBills.reduce((sum, b) => sum + b.amount, 0);
 
   return {
-    income: state.income,
-    totalSpending,
-    totalSavingsTransfer,
-    totalOutflow,
-    remainingCash,
-    totalBudgeted,
-    unallocatedBudget,
-    spendingPct,
-    savingsPct,
-    totalGoalSaved,
-    totalGoalTarget,
-    unpaidBillsCount: unpaidBills.length,
-    unpaidBillsTotal,
-    expenseCount: state.expenses.length,
+    income: store.income,
+    spending,
+    savings,
+    outflow,
+    freeCash,
+    plannedTotal,
+    unallocated,
+    spendRate,
+    saveRate,
+    goalsSaved,
+    goalsTarget,
+    pendingBillsCount: pendingBills.length,
+    pendingBillsAmount,
+    txCount: store.transactions.length,
   };
 }
 
-export function getRule503020() {
-  const summary = getCategorySummary();
-  const income = state.income || 1;
-  const buckets = {
-    needs: { label: 'Kebutuhan', targetPct: 50, targetAmount: Math.round(income * 0.5), budgeted: 0, actual: 0 },
-    wants: { label: 'Keinginan & Les', targetPct: 30, targetAmount: Math.round(income * 0.3), budgeted: 0, actual: 0 },
-    savings: { label: 'Tabungan', targetPct: 20, targetAmount: Math.round(income * 0.2), budgeted: 0, actual: 0 },
+export function computeRule503020() {
+  const rows = computeCategoryBreakdown();
+  const base = Math.max(1, store.income);
+  const groups = {
+    needs: { label: 'Kebutuhan Pokok', idealPct: 50, idealRp: Math.round(store.income * 0.5), planned: 0, actual: 0 },
+    wants: { label: 'Pengembangan & Keinginan', idealPct: 30, idealRp: Math.round(store.income * 0.3), planned: 0, actual: 0 },
+    savings: { label: 'Tabungan & Dana Darurat', idealPct: 20, idealRp: Math.round(store.income * 0.2), planned: 0, actual: 0 },
   };
-  for (const row of summary) {
-    const b = buckets[row.bucket];
-    if (b) {
-      b.budgeted += row.budget;
-      b.actual += row.spent;
+
+  for (const row of rows) {
+    const g = groups[row.group];
+    if (g) {
+      g.planned += row.limit;
+      g.actual += row.used;
     }
   }
-  for (const key of Object.keys(buckets)) {
-    const b = buckets[key];
-    b.actualPct = (b.actual / income) * 100;
-    b.budgetPct = (b.budgeted / income) * 100;
+
+  for (const key of Object.keys(groups)) {
+    groups[key].actualPct = (groups[key].actual / base) * 100;
+    groups[key].plannedPct = (groups[key].planned / base) * 100;
   }
-  return buckets;
+
+  return groups;
 }
 
-export function setIncome(amount) {
-  const clean = Math.max(0, Math.round(Number(amount) || 0));
-  state.income = clean;
-  notify();
+export function updateMonthlyIncome(value) {
+  const sanitized = Math.max(0, Math.round(Number(value) || 0));
+  store.income = sanitized;
+  store.simIncome = sanitized;
+  emitChange();
 }
 
-export function setBudget(categoryId, amount) {
-  if (state.budgets[categoryId] === undefined) return;
-  state.budgets[categoryId] = Math.max(0, Math.round(Number(amount) || 0));
-  notify();
+export function updateCategoryLimit(categoryId, value) {
+  if (!Object.hasOwn(store.limits, categoryId)) return;
+  store.limits[categoryId] = Math.max(0, Math.round(Number(value) || 0));
+  emitChange();
 }
 
-export function addExpense({ date, category, title, method, amount }) {
-  const cleanAmount = Math.max(1, Math.round(Number(amount) || 0));
-  const item = {
-    id: `exp-${++nextId}`,
+export function applyIdeal503020Plan() {
+  const inc = store.income;
+  const needsTotal = Math.round(inc * 0.5);
+  const wantsTotal = Math.round(inc * 0.3);
+  const savingsTotal = inc - needsTotal - wantsTotal;
+
+  // Proporsi pembagian wajar rumah tangga Indonesia di dalam tiap kelompok
+  const makanan = Math.round((needsTotal * 0.42) / 50000) * 50000;
+  const rumah = Math.round((needsTotal * 0.32) / 50000) * 50000;
+  const transport = Math.round((needsTotal * 0.14) / 50000) * 50000;
+  const utilitas = Math.max(0, needsTotal - makanan - rumah - transport);
+
+  const pendidikan = Math.round((wantsTotal * 0.58) / 50000) * 50000;
+  const hiburan = Math.max(0, wantsTotal - pendidikan);
+
+  store.limits.Makanan = makanan;
+  store.limits.Rumah = rumah;
+  store.limits.Transportasi = transport;
+  store.limits.Utilitas = utilitas;
+  store.limits.Pendidikan = pendidikan;
+  store.limits.Hiburan = hiburan;
+  store.limits.Tabungan = Math.max(0, savingsTotal);
+  emitChange();
+}
+
+export function createTransaction({ date, category, desc, method, amount }) {
+  const cleanAmount = Math.max(500, Math.round(Number(amount) || 0));
+  const record = {
+    id: `tx-${++seqCounter}`,
     date: date || '2026-11-26',
-    category: state.budgets[category] !== undefined ? category : 'Makanan',
-    title: String(title || 'Pengeluaran').trim(),
-    method: String(method || 'Tunai').trim(),
+    category: Object.hasOwn(store.limits, category) ? category : 'Makanan',
+    desc: String(desc || 'Transaksi rumah tangga').trim(),
+    method: String(method || 'QRIS').trim(),
     amount: cleanAmount,
   };
-  state.expenses.unshift(item);
-  notify();
-  return item;
+  store.transactions.unshift(record);
+  emitChange();
+  return record;
 }
 
-export function updateExpense(id, patch) {
-  const target = state.expenses.find((e) => e.id === id);
+export function editTransaction(id, fields) {
+  const target = store.transactions.find((t) => t.id === id);
   if (!target) return null;
-  if (patch.date) target.date = patch.date;
-  if (patch.category && state.budgets[patch.category] !== undefined) target.category = patch.category;
-  if (patch.title !== undefined) target.title = String(patch.title).trim() || target.title;
-  if (patch.method !== undefined) target.method = String(patch.method).trim() || target.method;
-  if (patch.amount !== undefined) target.amount = Math.max(1, Math.round(Number(patch.amount) || target.amount));
-  state.editingExpenseId = null;
-  notify();
+  if (fields.date) target.date = fields.date;
+  if (fields.category && Object.hasOwn(store.limits, fields.category)) target.category = fields.category;
+  if (fields.desc !== undefined) target.desc = String(fields.desc).trim() || target.desc;
+  if (fields.method !== undefined) target.method = String(fields.method).trim() || target.method;
+  if (fields.amount !== undefined) target.amount = Math.max(500, Math.round(Number(fields.amount) || target.amount));
+  store.editingTxId = null;
+  emitChange();
   return target;
 }
 
-export function deleteExpense(id) {
-  const idx = state.expenses.findIndex((e) => e.id === id);
-  if (idx === -1) return false;
-  state.expenses.splice(idx, 1);
-  if (state.editingExpenseId === id) state.editingExpenseId = null;
-  notify();
-  return true;
+export function removeTransaction(id) {
+  const idx = store.transactions.findIndex((t) => t.id === id);
+  if (idx === -1) return null;
+  const [removed] = store.transactions.splice(idx, 1);
+  if (store.editingTxId === id) store.editingTxId = null;
+  emitChange();
+  return removed;
 }
 
-export function setEditingExpense(id) {
-  state.editingExpenseId = id;
-  notify();
+export function selectEditingTransaction(id) {
+  store.editingTxId = id;
+  emitChange();
 }
 
-export function setExpenseFilter(patch) {
-  Object.assign(state.expenseFilter, patch);
-  notify();
+export function patchFilters(patch) {
+  Object.assign(store.filters, patch);
+  emitChange();
 }
 
-export function addGoalDeposit(goalId, amount, recordAsTransfer = false) {
-  const goal = state.goals.find((g) => g.id === goalId);
+export function setSimulatedIncome(value) {
+  store.simIncome = Math.max(2000000, Math.round(Number(value) || FAMILY_PROFILE.incomeMonthly));
+  emitChange();
+}
+
+export function depositToGoal(goalId, amount, alsoLogExpense = true) {
+  const goal = store.goals.find((g) => g.id === goalId);
   const clean = Math.max(0, Math.round(Number(amount) || 0));
   if (!goal || clean <= 0) return null;
-  goal.saved += clean;
-  if (recordAsTransfer) {
-    state.expenses.unshift({
-      id: `exp-${++nextId}`,
+  goal.current += clean;
+  if (alsoLogExpense) {
+    store.transactions.unshift({
+      id: `tx-${++seqCounter}`,
       date: '2026-11-26',
       category: 'Tabungan',
-      title: `Setoran ${goal.name}`,
-      method: 'Transfer Bank',
+      desc: `Setoran ${goal.title}`,
+      method: 'Transfer Mandiri',
       amount: clean,
     });
   }
-  notify();
+  emitChange();
   return goal;
 }
 
-export function addGoal({ name, note, target, saved, monthly }) {
-  const palette = ['#0F5C4D', '#7C3AED', '#C96A2B', '#2563EB', '#0D9488', '#D97706'];
-  const goal = {
-    id: `goal-${++nextId}`,
-    name: String(name || 'Target Baru').trim(),
-    note: String(note || 'Target tabungan keluarga').trim(),
+export function createGoal({ title, detail, target, current, monthlyPlan }) {
+  const swatches = ['#114B45', '#6D3CE0', '#C85A28', '#2358C8', '#0E8A7D', '#D97706'];
+  const entry = {
+    id: `sv-${++seqCounter}`,
+    title: String(title || 'Target Baru').trim(),
+    detail: String(detail || 'Rencana tabungan rumah tangga').trim(),
     target: Math.max(100000, Math.round(Number(target) || 1000000)),
-    saved: Math.max(0, Math.round(Number(saved) || 0)),
-    monthly: Math.max(50000, Math.round(Number(monthly) || 200000)),
-    color: palette[state.goals.length % palette.length],
+    current: Math.max(0, Math.round(Number(current) || 0)),
+    monthlyPlan: Math.max(50000, Math.round(Number(monthlyPlan) || 250000)),
+    tint: swatches[store.goals.length % swatches.length],
   };
-  state.goals.push(goal);
-  notify();
-  return goal;
+  store.goals.push(entry);
+  emitChange();
+  return entry;
 }
 
-export function deleteGoal(goalId) {
-  const idx = state.goals.findIndex((g) => g.id === goalId);
-  if (idx === -1) return false;
-  state.goals.splice(idx, 1);
-  notify();
-  return true;
+export function removeGoal(goalId) {
+  const idx = store.goals.findIndex((g) => g.id === goalId);
+  if (idx === -1) return null;
+  const [removed] = store.goals.splice(idx, 1);
+  emitChange();
+  return removed;
 }
 
-export function toggleBillPaid(billId) {
-  const bill = state.bills.find((b) => b.id === billId);
+export function flipBillStatus(billId) {
+  const bill = store.bills.find((b) => b.id === billId);
   if (!bill) return null;
-  bill.paid = !bill.paid;
-  notify();
+  bill.settled = !bill.settled;
+  emitChange();
   return bill;
 }
 
-export function payBillAndRecord(billId) {
-  const bill = state.bills.find((b) => b.id === billId);
-  if (!bill) return null;
-  if (!bill.paid) {
-    bill.paid = true;
-    state.expenses.unshift({
-      id: `exp-${++nextId}`,
-      date: '2026-11-26',
-      category: bill.category,
-      title: `Bayar tagihan: ${bill.title}`,
-      method: 'Mobile Banking',
-      amount: bill.amount,
-    });
-    notify();
-  }
+export function settleBillWithExpense(billId) {
+  const bill = store.bills.find((b) => b.id === billId);
+  if (!bill || bill.settled) return null;
+  bill.settled = true;
+  store.transactions.unshift({
+    id: `tx-${++seqCounter}`,
+    date: '2026-11-26',
+    category: bill.category,
+    desc: `Bayar tagihan: ${bill.name}`,
+    method: 'Mobile Banking',
+    amount: bill.amount,
+  });
+  emitChange();
   return bill;
 }
 
-export function addBill({ title, dueDay, category, amount }) {
-  const day = Math.min(31, Math.max(1, Math.round(Number(dueDay) || 28)));
+export function createBill({ name, day, category, amount }) {
+  const due = Math.min(31, Math.max(1, Math.round(Number(day) || 28)));
   const bill = {
-    id: `bill-${++nextId}`,
-    title: String(title || 'Tagihan Bulanan').trim(),
-    dueDay: day,
-    dueLabel: `${day} Nov 2026`,
-    category: state.budgets[category] !== undefined ? category : 'Utilitas',
+    id: `bl-${++seqCounter}`,
+    name: String(name || 'Tagihan Rutin').trim(),
+    day: due,
+    dateText: `${due} Nov 2026`,
+    category: Object.hasOwn(store.limits, category) ? category : 'Utilitas',
     amount: Math.max(1000, Math.round(Number(amount) || 0)),
-    paid: false,
+    settled: false,
   };
-  state.bills.push(bill);
-  state.bills.sort((a, b) => a.dueDay - b.dueDay);
-  notify();
+  store.bills.push(bill);
+  store.bills.sort((a, b) => a.day - b.day);
+  emitChange();
   return bill;
 }
 
-export function deleteBill(billId) {
-  const idx = state.bills.findIndex((b) => b.id === billId);
-  if (idx === -1) return false;
-  state.bills.splice(idx, 1);
-  notify();
-  return true;
+export function removeBill(billId) {
+  const idx = store.bills.findIndex((b) => b.id === billId);
+  if (idx === -1) return null;
+  const [removed] = store.bills.splice(idx, 1);
+  emitChange();
+  return removed;
 }
 
-export function formatRupiah(value) {
-  const num = Math.round(Number(value) || 0);
-  const abs = Math.abs(num);
-  const formatted = abs.toString().replace(/\B(?=(\d{3})+(?!\d))/g, '.');
-  return num < 0 ? `-Rp ${formatted}` : `Rp ${formatted}`;
+export function buildTransactionsCsv(list) {
+  const header = ['Tanggal', 'Keterangan', 'Kategori', 'Metode', 'Nominal (Rp)'];
+  const rows = list.map((t) => [
+    t.date,
+    `"${String(t.desc).replace(/"/g, '""')}"`,
+    t.category,
+    t.method,
+    String(t.amount),
+  ]);
+  return [header.join(','), ...rows.map((r) => r.join(','))].join('\n');
 }
 
-export function formatShortRupiah(value) {
-  const num = Math.round(Number(value) || 0);
-  const abs = Math.abs(num);
-  const sign = num < 0 ? '-' : '';
+export function rp(amount) {
+  const n = Math.round(Number(amount) || 0);
+  const formatted = Math.abs(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+  return n < 0 ? `-Rp ${formatted}` : `Rp ${formatted}`;
+}
+
+export function rpCompact(amount) {
+  const n = Math.round(Number(amount) || 0);
+  const abs = Math.abs(n);
+  const prefix = n < 0 ? '-' : '';
   if (abs >= 1000000) {
-    const jt = (abs / 1000000).toFixed(abs % 1000000 === 0 ? 0 : 1).replace('.', ',');
-    return `${sign}Rp ${jt} jt`;
+    const val = (abs / 1000000).toFixed(abs % 1000000 === 0 ? 0 : 1).replace('.', ',');
+    return `${prefix}Rp ${val} jt`;
   }
   if (abs >= 1000) {
-    return `${sign}Rp ${Math.round(abs / 1000)} rb`;
+    return `${prefix}Rp ${Math.round(abs / 1000)} rb`;
   }
-  return `${sign}Rp ${abs}`;
+  return `${prefix}Rp ${abs}`;
 }
 
-export function formatDateId(isoDate) {
-  const parts = String(isoDate || '').split('-');
-  if (parts.length !== 3) return isoDate;
+export function shortDateId(iso) {
+  const parts = String(iso || '').split('-');
+  if (parts.length !== 3) return iso;
   const months = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des'];
   const m = Number(parts[1]) - 1;
   return `${Number(parts[2])} ${months[m] ?? parts[1]}`;
 }
 
-export function escapeHtml(str) {
-  return String(str ?? '').replace(/[&<>"']/g, (ch) => {
-    switch (ch) {
-      case '&': return '&amp;';
-      case '<': return '&lt;';
-      case '>': return '&gt;';
-      case '"': return '&quot;';
-      default: return '&#39;';
-    }
+export function esc(text) {
+  return String(text ?? '').replace(/[&<>"']/g, (ch) => {
+    if (ch === '&') return '&amp;';
+    if (ch === '<') return '&lt;';
+    if (ch === '>') return '&gt;';
+    if (ch === '"') return '&quot;';
+    return '&#39;';
   });
 }
